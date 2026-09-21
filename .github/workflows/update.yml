@@ -49,13 +49,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/seen.json data/translations_cache.json 2>/dev/null || true
+          git add state/seen.json data/translations_cache.json || true
           if git diff --cached --quiet; then
             echo "Изменений состояния нет"
           else
             git commit -m "update: состояние парсера $(date -u +'%Y-%m-%d %H:%M') UTC"
-            git pull --rebase
-            git push
+            # прямой push: не мешают незакоммиченные output/ (Pages берёт их из рабочего дерева)
+            git push origin HEAD:main \
+              || echo "::warning::push состояния не удался (не критично, дельта догонит в следующий раз)"
           fi
 
       - name: Настройка Pages артефакта

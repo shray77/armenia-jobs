@@ -6,4 +6,10 @@ venv/
 probe/
 *.log
 .gh_token
+.gh_user
 .DS_Store
+
+# тяжёлые артефакты: Pages получает их из рабочего дерева Actions,
+# в git храним только состояние и кэш переводов
+output/
+data/latest.json
