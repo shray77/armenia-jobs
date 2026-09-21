@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 
 from src.scrapers import collect_all
@@ -23,6 +24,7 @@ from src.storage import load_seen, save_seen, diff_new, mark_seen, save_latest
 from src.excel import build_excel
 from src.dashboard import build_dashboard
 from src.telegram_notify import notify_new
+from src.geo import tag_vacancies, stats_line
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +66,13 @@ def main() -> int:
 
     # 3. Перевод
     translate_vacancies(vacancies)
+
+    # 3.5 Повторная гео-разметка: title_ru уже заполнен, и фолбэк по заголовку
+    #     ловит заграницу, спрятанную в переведённом названии («…в РФ, Москва»),
+    #     даже если исходник был армянским/английским или перевод не удался
+    tag_vacancies(vacancies)
+    stats["гео"] = stats_line(Counter(v.geo for v in vacancies))
+
     save_latest(vacancies)
 
     # 4. Excel
