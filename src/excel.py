@@ -10,6 +10,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .config import EXCEL_FILE
+from .geo import GEO_RU
 from .models import Vacancy, sort_key
 
 log = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ SOURCE_NAMES = {
 }
 
 HEADERS = ["№", "Источник", "Вакансия (ориг.)", "Вакансия (рус.)", "Зарплата",
-           "Локация", "Компания", "Категория", "Удалённо", "Опубликовано", "Ссылка"]
+           "Локация", "Гео", "Компания", "Категория", "Удалённо", "Опубликовано", "Ссылка"]
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11)
@@ -62,6 +63,7 @@ def build_excel(vacancies: list[Vacancy]) -> None:
             v.title_ru or ("" if v.title_orig else "—"),
             v.salary,
             v.city,
+            GEO_RU.get(v.geo, v.geo),
             v.company,
             v.category,
             "да" if v.is_remote else "",
@@ -77,7 +79,7 @@ def build_excel(vacancies: list[Vacancy]) -> None:
             for c in ws[r]:
                 c.fill = ALT_FILL
         # гиперссылка
-        url_cell = ws.cell(row=r, column=11)
+        url_cell = ws.cell(row=r, column=12)
         if v.url:
             url_cell.hyperlink = v.url
             url_cell.font = LINK_FONT
@@ -85,11 +87,11 @@ def build_excel(vacancies: list[Vacancy]) -> None:
             ws.cell(row=r, column=4).font = Font(bold=True)
 
     # ширины колонок
-    widths = [5, 11, 42, 42, 18, 18, 26, 26, 9, 17, 46]
+    widths = [5, 11, 42, 42, 18, 18, 12, 26, 26, 9, 17, 46]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:K{ws.max_row}"
+    ws.auto_filter.ref = f"A1:L{ws.max_row}"
 
     # ---- Сводка ----
     st = wb.create_sheet("Сводка")
@@ -101,6 +103,8 @@ def build_excel(vacancies: list[Vacancy]) -> None:
     st["A1"].font = Font(bold=True, size=14)
     st.append(["Сформировано", datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")])
     st.append(["Всего вакансий", len(vacancies)])
+    st.append(["Из них зарубежных (скрыты фильтром сайта)",
+               sum(1 for v in vacancies if v.geo == "foreign")])
     st.append(["Удалённых", remote_cnt])
     st.append([])
     st.append(["По источникам", ""])

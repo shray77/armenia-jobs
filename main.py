@@ -72,11 +72,14 @@ def main() -> int:
     # 5. Дашборд
     build_dashboard(vacancies, stats)
 
-    # 6. Telegram: только новые
+    # 6. Telegram: только новые; зарубежные не шлём (брату нужна работа в
+    #    Армении), но помечаем как показанные — чтобы не всплывали каждый прогон
     seen = load_seen()
     fresh = diff_new(vacancies, seen)
-    log.info("новых вакансий с прошлого запуска: %d", len(fresh))
-    sent = notify_new(fresh)
+    tg_fresh = [v for v in fresh if v.geo != "foreign"]
+    log.info("новых вакансий с прошлого запуска: %d (в TG: %d после отсечки заграницы)",
+             len(fresh), len(tg_fresh))
+    sent = notify_new(tg_fresh)
 
     # помечаем как показанные все собранные (не только отправленные),
     # иначе при большом притоке TG-спам будет бесконечным

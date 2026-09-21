@@ -74,6 +74,7 @@ tbody tr:hover {{ background:#f7faff; }}
 .b-list {{ background:#fdeee8; color:#d3502c; }}
 .b-hire {{ background:#f1e9fb; color:#6b3fa0; }}
 .b-remote {{ background:#fff7df; color:#8a6d00; }}
+.b-foreign {{ background:#f3f4f6; color:#6b7280; }}
 a {{ color:var(--accent2); text-decoration:none; }}
 a:hover {{ text-decoration:underline; }}
 .t-muted {{ color:var(--muted); font-size:12px; }}
@@ -91,7 +92,7 @@ a:hover {{ text-decoration:underline; }}
     <h1>🇦🇲 Вакансии в Армении — агрегатор</h1>
     <div class="sub">staff.am · worknet.am · list.am · hire.am — сбор, перевод на русский, обновление по расписанию. Обновлено: {now}</div>
     <div class="counters">
-      <div class="counter"><b id="c-total">…</b><span>всего вакансий</span></div>
+      <div class="counter"><b id="c-total">…</b><span>вакансий (без заграницы / всего)</span></div>
       <div class="counter"><b id="c-yerevan">…</b><span>Ереван</span></div>
       <div class="counter"><b id="c-remote">…</b><span>удалённо</span></div>
       <div class="counter"><b id="c-companies">…</b><span>компаний</span></div>
@@ -103,6 +104,9 @@ a:hover {{ text-decoration:underline; }}
     <input id="q" type="search" placeholder="Поиск: должность, компания, город…">
     <select id="f-source"><option value="">Все источники</option></select>
     <select id="f-city"><option value="">Все локации</option></select>
+    <label style="display:flex;align-items:center;gap:6px;font-size:14px">
+      <input type="checkbox" id="f-geo" checked style="width:auto"> без заграницы
+    </label>
     <label style="display:flex;align-items:center;gap:6px;font-size:14px">
       <input type="checkbox" id="f-remote" style="width:auto"> только удалённые
     </label>
@@ -136,7 +140,7 @@ a:hover {{ text-decoration:underline; }}
 const DATA = {payload};
 const $ = id => document.getElementById(id);
 const cTotal = $('c-total'), cYerevan = $('c-yerevan'), cRemote = $('c-remote'), cCompanies = $('c-companies');
-const qEl = $('q'), fSource = $('f-source'), fCity = $('f-city'), fRemote = $('f-remote'), reset = $('reset');
+const qEl = $('q'), fSource = $('f-source'), fCity = $('f-city'), fRemote = $('f-remote'), fGeo = $('f-geo'), reset = $('reset');
 const rowsEl = $('rows'), emptyEl = $('empty');
 const SRC = {{staff:'staff.am', worknet:'worknet.am', list:'list.am', hire:'hire.am'}};
 const fmtDate = s => {{
@@ -147,11 +151,13 @@ const fmtDate = s => {{
 }};
 const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}})[c]);
 
-// счётчики
+// счётчики (всего и «без заграницы» — как на сайте по умолчанию)
+const visibleNoForeign = DATA.filter(v => v.geo !== 'foreign').length;
 const yerevan = DATA.filter(v => (v.city||'').toLowerCase().includes('ереван')).length;
 const remote = DATA.filter(v => v.is_remote).length;
-const companies = new Set(DATA.map(v => (v.company||'').toLowerCase()).filter(Boolean)).size;
-cTotal.textContent = DATA.length; cYerevan.textContent = yerevan;
+const companies = new Set(DATA.filter(v => v.geo !== 'foreign').map(v => (v.company||'').toLowerCase()).filter(Boolean)).size;
+cTotal.textContent = `${{visibleNoForeign}}<span style="font-size:13px;color:#c6d4e6"> / ${{DATA.length}}</span>`;
+cYerevan.textContent = yerevan;
 cRemote.textContent = remote; cCompanies.textContent = companies;
 
 // фильтры
@@ -167,11 +173,12 @@ for (const c of cities) {{
 let sortKey = 'posted_at', sortDir = -1;
 function rows() {{
   const q = qEl.value.trim().toLowerCase();
-  const src = fSource.value, city = fCity.value, rem = fRemote.checked;
+  const src = fSource.value, city = fCity.value, rem = fRemote.checked, noForeign = fGeo.checked;
   let r = DATA.filter(v => {{
     if (src && v.source !== src) return false;
     if (city && v.city !== city) return false;
     if (rem && !v.is_remote) return false;
+    if (noForeign && v.geo === 'foreign') return false;
     if (q) {{
       const hay = [v.title_orig, v.title_ru, v.company, v.city, v.category].join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
@@ -197,6 +204,7 @@ function render() {{
       <td class="t-muted hide-sm">${{fmtDate(v.posted_at)}}</td>
       <td><a href="${{esc(v.url)}}" target="_blank" rel="noopener"><b>${{esc(title)}}</b></a>${{orig}}
         ${{v.is_remote ? '<span class="badge b-remote">удалённо</span>' : ''}}
+        ${{v.geo === 'foreign' ? '<span class="badge b-foreign">заграница</span>' : ''}}
         ${{v.category ? `<div class="t-muted">${{esc(v.category)}}</div>` : ''}}</td>
       <td class="hide-sm">${{esc(v.salary||'—')}}</td>
       <td>${{esc(v.city||'—')}}</td>
@@ -213,8 +221,9 @@ qEl.addEventListener('input', render);
 fSource.addEventListener('change', render);
 fCity.addEventListener('change', render);
 fRemote.addEventListener('change', render);
+fGeo.addEventListener('change', render);
 reset.addEventListener('click', () => {{
-  qEl.value = ''; fSource.value = ''; fCity.value = ''; fRemote.checked = false; render();
+  qEl.value = ''; fSource.value = ''; fCity.value = ''; fRemote.checked = false; fGeo.checked = true; render();
 }});
 document.querySelectorAll('th[data-k]').forEach(th => th.addEventListener('click', () => {{
   const k = th.dataset.k;

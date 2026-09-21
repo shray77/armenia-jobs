@@ -1,26 +1,26 @@
-"""hire.am — «странный» сайт: жив по HTTP, но с датацентровых IP отвечает
-неохотно, а DNS из датацентров часто вообще не отдаётся.
+"""hire.am — старый Jobberbase v1.9 (серверный PHP, без JS-рендеринга).
 
-Скрапер многослойный, каждый слой опционален:
-  1. DNS: обычный резолв -> DoH (dns.google / cloudflare-dns) -> IP-режим
-     (коннект по IP с заголовком Host: hire.am, редиректы ходим руками).
-  2. Схема: сначала http://, затем https:// (по наблюдениям сайт жив по http).
-  3. Парсинг устойчив к вёрстке: JSON-LD JobPosting -> og-теги;
-     кандидаты: ссылки-паттерны (/job|/vacanc|/career|/post) + sitemap.xml.
-Все ошибки глотаются — конвейер не падает, источник просто вернёт 0.
+Жив по http (https/датацентровые IP капризничают — поэтому WARP + DoH-фолбэк).
+Структура известна точно:
+  - категории:   http://www.hire.am/jobs/{cat}/   (it, hr, pr, transport, ...)
+  - пагинация:   /jobs/{cat}/?p=N (свежие сверху, id растут)
+  - карточки:    /job/{id}/{slug}/
+  - RSS:         /rss/all/ (фолбэк, если категории не отвечают)
+Строка категории содержит всё: "TITLE ... at COMPANY in CITY ... DD-MM-YYYY".
+Все ошибки глотаются — конвейер не падает.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import re
 import time
+from datetime import datetime
+from html import unescape
 from urllib.parse import urljoin, urlparse
 
 import requests
-from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
 
 from ..config import HIRE_MAX_ITEMS, HIRE_TIME_BUDGET, SLEEP_BETWEEN_REQUESTS
 from ..models import Vacancy
@@ -34,13 +34,14 @@ DOH_ENDPOINTS = (
     "https://cloudflare-dns.com/dns-query",
 )
 
-JOB_PATH_RE = re.compile(r"/(?:job|jobs|vacanc\w*|career\w*|positions?|post)/", re.I)
-SALARY_RE = re.compile(r"(\d[\d ,.\u0589]{0,20})(֏|\$|amd|usd|драм|դրամ)", re.I)
-CITY_DISPLAY = {
-    "ереван": "Ереван", "yerevan": "Ереван",
-    "гюмри": "Гюмри", "gyumri": "Гюмри",
-    "ванадзор": "Ванадзор", "vanadzor": "Ванадзор",
+CATEGORIES = {
+    "it": "IT", "hr": "HR", "pr": "PR", "transport": "Транспорт",
+    "managers": "Менеджмент", "accounting": "Бухгалтерия",
+    "medicine": "Медицина", "sales": "Продажи", "other": "Другое",
 }
+ITEM_RE = re.compile(r"/job/(\d+)")
+PAGES_PER_CAT = 12          # страниц на категорию максимум
+TIME_RE = re.compile(r"(\d{2})-(\d{2})-(\d{4})")
 
 
 def _looks_html(text: str) -> bool:
@@ -55,8 +56,7 @@ def _no_retry_session(s: requests.Session) -> requests.Session:
     ns = requests.Session()
     ns.headers.update(s.headers)
     ns.proxies.update(s.proxies)
-    no_retry = HTTPAdapter(max_retries=0)
-    ns.mount("http://", no_retry)
+    ns.mount("http://", HTTPAdapter(max_retries=0))
     ns.mount("https://", HTTPAdapter(max_retries=0))
     return ns
 
@@ -85,7 +85,6 @@ class _Site:
         self.ip_mode = False
         self.ip: str | None = None
 
-    # -- служебное ---------------------------------------------------------
     def _headers(self) -> dict | None:
         return {"Host": HOST} if self.ip_mode else None
 
@@ -96,8 +95,7 @@ class _Site:
         return url
 
     def get(self, url: str, timeout: int = 25) -> requests.Response:
-        """GET с ручным проходом редиректов в IP-режиме (Location с доменом
-        мы тоже заворачиваем на IP)."""
+        """GET с ручным проходом редиректов в IP-режиме."""
         if self.ip_mode:
             url = self._rewrite_to_ip(url)
             for _ in range(4):
@@ -110,7 +108,6 @@ class _Site:
             return r
         return self.s.get(url, timeout=timeout, allow_redirects=True)
 
-    # -- подключение ---------------------------------------------------------
     def connect(self) -> bool:
         for base in BASES:
             try:
@@ -121,12 +118,11 @@ class _Site:
                     return True
             except Exception as e:  # noqa: BLE001
                 log.info("hire.am: %s недоступен (%s)", base, e.__class__.__name__)
-        # IP-режим: резолвим через DoH и коннектимся напрямую по адресу
         self.ip = _doh_resolve(self.s)
         if not self.ip:
             log.warning("hire.am: DNS не резолвится ни напрямую, ни через DoH — пропуск")
             return False
-        log.info("hire.am: DNS через DoH -> %s, пробуем IP-режим с Host-заголовком", self.ip)
+        log.info("hire.am: DNS через DoH -> %s, пробуем IP-режим", self.ip)
         for scheme in ("http", "https"):
             try:
                 r = self.s.get(f"{scheme}://{self.ip}/", timeout=20,
@@ -142,158 +138,124 @@ class _Site:
         log.warning("hire.am: сайт не отвечает даже по IP — пропуск")
         return False
 
-    # -- сбор кандидатов -----------------------------------------------------
-    def links_from_html(self, html: str) -> set[str]:
-        """Относительные пути страниц-вакансий из всех <a href>."""
-        out: set[str] = set()
-        for m in re.finditer(r"""href\s*=\s*["']([^"'#\s]+)["']""", html, re.I):
-            href = m.group(1).strip()
-            if href.startswith(("javascript:", "mailto:", "tel:", "data:")):
-                continue
-            full = urljoin(self.base + "/", href)
-            p = urlparse(full)
-            if p.netloc and HOST not in p.netloc and p.netloc != self.ip:
-                continue
-            if JOB_PATH_RE.search(p.path):
-                out.add(p.path)
-        return out
 
-    def urls_from_sitemaps(self) -> set[str]:
-        """Пути вакансий из sitemap.xml (один уровень индекса)."""
-        paths: set[str] = set()
-        tried = set()
-        queue = ["/sitemap.xml", "/sitemap_index.xml"]
-        while queue and len(tried) < 4:
-            sm = queue.pop(0)
-            if sm in tried:
-                continue
-            tried.add(sm)
-            try:
-                r = self.get(sm, timeout=20)
-                if not r.ok:
-                    continue
-                locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", r.text, re.I)[:3000]
-                if not locs:
-                    continue
-                log.info("hire.am: %s -> %d ссылок", sm, len(locs))
-                for loc in locs:
-                    if loc.endswith(".xml") and "sitemap" in loc.lower():
-                        queue.append(loc if loc.startswith("http") else self.base + loc)
-                    elif JOB_PATH_RE.search(loc):
-                        p = urlparse(loc)
-                        paths.add(p.path)
-            except Exception as e:  # noqa: BLE001
-                log.debug("hire.am: sitemap %s не получен: %s", sm, e)
-        return paths
+def _clean(s: str) -> str:
+    s = unescape(re.sub(r"<[^>]+>", " ", s or ""))
+    return re.sub(r"\s+", " ", s).strip(" .,-")
 
 
-def _parse_jsonld_jobs(html: str, page_url: str) -> list[tuple[dict, str]]:
-    """Все JobPosting-объекты со страницы."""
-    found: list[tuple[dict, str]] = []
-    for block in re.findall(
-            r"""<script[^>]*type=["']application/ld\+json["'][^>]*>(.*?)</script>""",
-            html, re.I | re.S):
-        try:
-            data = json.loads(block.strip())
-        except Exception:
-            continue
-        items = data if isinstance(data, list) else [data]
-        for d in items:
-            if not isinstance(d, dict):
-                continue
-            t = d.get("@type")
-            types = t if isinstance(t, list) else [t]
-            if any(isinstance(x, str) and x.lower() == "jobposting" for x in types):
-                found.append((d, page_url))
-            for g in (d.get("@graph") or []):
-                if isinstance(g, dict) and str(g.get("@type", "")).lower() == "jobposting":
-                    found.append((g, page_url))
-    return found
-
-
-def _vac_from_jsonld(d: dict, fallback_url: str) -> Vacancy | None:
-    title = (d.get("title") or d.get("name") or "").strip()
-    if not title:
+def _parse_row(div, category: str) -> Vacancy | None:
+    """Одна строка-карточка со страницы категории."""
+    info = div.find("span", class_="row-info")
+    a = info.find("a", href=ITEM_RE.search) if info else None
+    if not a:
         return None
-    # собственная ссылка карточки, если движок её отдал
-    jurl = d.get("url") or d.get("@id") or ""
-    url = jurl if (isinstance(jurl, str) and jurl.startswith("http")) else fallback_url
-    path = urlparse(url).path
-    ext_id = hashlib.sha1(path.encode()).hexdigest()[:12]
-    org = d.get("hiringOrganization") or {}
-    company = (org.get("name") or "").strip() if isinstance(org, dict) else ""
+    href = a.get("href", "")
+    m = ITEM_RE.search(href)
+    if not m:
+        return None
+    ext_id = m.group(1)
+    title = (a.get("title") or a.get_text(strip=True) or "").strip()
+    if not title or title.lower() == "jobber":
+        return None
 
-    city = ""
-    loc = d.get("jobLocation") or {}
-    if isinstance(loc, list):
-        loc = loc[0] if loc else {}
-    if isinstance(loc, dict):
-        addr = loc.get("address") or {}
-        if isinstance(addr, dict):
-            city = (addr.get("addressLocality") or addr.get("addressRegion") or "").strip()
+    raw = str(info)
+    company = city = ""
+    is_remote = False
+    # "... </a> <span class="la">at</span> COMPANY <span class="la">in</span> CITY ..."
+    mm = re.search(
+        r"</a>\s*<span class=\"la\">at</span>(.*?)"
+        r"(?:<span class=\"la\">in</span>(.*?))?(?:</span>|$)", raw, re.S)
+    if mm:
+        company = _clean(mm.group(1))
+        city = _clean(mm.group(2) or "")
+        # вариант без "in": "COMPANY, Anywhere" / "COMPANY, Город" — переносим хвост
+        if not city and "," in company:
+            from ..geo import classify
+            prefix, tail = company.rsplit(",", 1)
+            tail = tail.strip()
+            tc = classify(tail)
+            if tc == "remote":
+                company, city, is_remote = prefix.strip(), "", True
+            elif tc == "armenia":
+                company, city = prefix.strip(), tail
 
-    posted = d.get("datePosted") or None
+    if city.lower() in ("anywhere", "any where", "home office", "home-based", "remote"):
+        is_remote = True
+        city = ""
 
-    salary = ""
-    bs = d.get("baseSalary") or {}
-    if isinstance(bs, dict):
-        val = bs.get("value") or {}
-        if isinstance(val, dict) and val.get("value"):
-            unit = (bs.get("unitText") or "").strip()
-            salary = f"{val['value']} {unit}".strip()
+    posted = None
+    tm = TIME_RE.search(str(div))
+    if tm:
+        try:
+            posted = datetime.strptime(f"{tm.group(3)}-{tm.group(2)}-{tm.group(1)}",
+                                       "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            pass
 
+    url = href if href.startswith("http") else f"http://www.{HOST}{href}"
     return Vacancy(
         source="hire",
         uid=f"hire:{ext_id}",
         ext_id=ext_id,
         title_orig=title[:200],
-        salary=salary,
         city=city,
         company=company,
-        category="",
-        is_remote=bool(re.search(r"remote|удал", title, re.I)),
+        category=category,
+        is_remote=is_remote,
         url=url,
         posted_at=posted,
     )
 
 
-def _vac_from_html(html: str, url: str) -> Vacancy | None:
-    """Фолбэк без JSON-LD: og:title/h1 + эвристики зарплаты и города."""
+def _parse_category_page(html: str, category: str) -> list[Vacancy]:
     soup = BeautifulSoup(html, "lxml")
-    title = ""
-    og = soup.find("meta", attrs={"property": "og:title"})
-    if og and og.get("content"):
-        title = og["content"].strip()
-    if not title:
-        h1 = soup.find("h1")
-        if h1:
-            title = h1.get_text(" ", strip=True)
-    if not title or len(title) < 3:
-        return None
+    out: list[Vacancy] = []
+    seen: set[str] = set()
+    for div in soup.find_all("div", class_=re.compile(r"^row(-alt)?$")):
+        v = _parse_row(div, category)
+        if v and v.uid not in seen:
+            seen.add(v.uid)
+            out.append(v)
+    return out
 
-    text = soup.get_text(" ", strip=True)[:2000]
-    salary = ""
-    sm = SALARY_RE.search(text)
-    if sm:
-        salary = f"{sm.group(1).strip()} {sm.group(2).strip()}"
 
-    city = ""
-    low = text.lower()
-    for hint, display in CITY_DISPLAY.items():
-        if hint in low:
-            city = display
-            break
-
-    return Vacancy(
-        source="hire",
-        uid="hire:" + hashlib.sha1(urlparse(url).path.encode()).hexdigest()[:12],
-        ext_id=hashlib.sha1(urlparse(url).path.encode()).hexdigest()[:12],
-        title_orig=title[:200],
-        salary=salary,
-        city=city,
-        is_remote=bool(re.search(r"remote|удал", title, re.I)),
-        url=url,
-    )
+def _rss_fallback(site: _Site) -> list[Vacancy]:
+    """Фолбэк: RSS /rss/all/ — заголовки и ссылки (без города/компании)."""
+    out: list[Vacancy] = []
+    try:
+        r = site.get(site.base + "/rss/all/", timeout=25)
+        if not r.ok:
+            return out
+        for m in re.finditer(
+                r"<item>.*?</item>", r.text, re.S | re.I):
+            block = m.group(0)
+            t = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", block, re.S)
+            l = re.search(r"<link>(.*?)</link>", block, re.S)
+            d = re.search(r"<pubDate>(.*?)</pubDate>", block, re.S)
+            title = _clean(t.group(1)) if t else ""
+            link = (l.group(1) or "").strip() if l else ""
+            if not title or not link:
+                continue
+            im = ITEM_RE.search(link)
+            ext_id = im.group(1) if im else str(abs(hash(link)) % 10**10)
+            posted = None
+            if d:
+                try:
+                    from email.utils import parsedate_to_datetime
+                    posted = parsedate_to_datetime(d.group(1)).date().isoformat()
+                except Exception:  # noqa: BLE001
+                    pass
+            out.append(Vacancy(
+                source="hire", uid=f"hire:{ext_id}", ext_id=ext_id,
+                title_orig=title[:200],
+                url=link if link.startswith("http") else f"http://www.{HOST}{link}",
+                posted_at=posted,
+            ))
+        log.info("hire.am: RSS-фолбэк -> %d вакансий", len(out))
+    except Exception as e:  # noqa: BLE001
+        log.warning("hire.am: RSS не получен: %s", e)
+    return out
 
 
 def scrape(session: requests.Session) -> list[Vacancy]:
@@ -307,75 +269,54 @@ def scrape(session: requests.Session) -> list[Vacancy]:
         return []
 
     out: list[Vacancy] = []
-    seen_uids: set[str] = set()
+    seen_ids: set[str] = set()
+    statuses: dict[int, int] = {}
 
     def add(v: Vacancy | None) -> None:
-        if v and v.uid not in seen_uids:
-            seen_uids.add(v.uid)
+        if v and v.ext_id not in seen_ids:
+            seen_ids.add(v.ext_id)
             out.append(v)
 
-    # 1) главная -> JSON-LD + ссылки
-    candidates: list[str] = []
-    try:
-        r = site.get(site.base + "/")
-        if r.ok:
-            for d, _ in _parse_jsonld_jobs(r.text, site.base + "/"):
-                v = _vac_from_jsonld(d, site.base + "/")
-                # без собственной ссылки вакансию не добавляем (иначе получим
-                # «вакансию» с uid главной страницы)
-                if v and v.url != site.base + "/":
-                    add(v)
-            candidates.extend(site.links_from_html(r.text))
-            log.info("hire.am: главная -> %d кандидатов-ссылок, %d json-ld вакансий",
-                     len(candidates), len(out))
-    except Exception as e:  # noqa: BLE001
-        log.warning("hire.am: главная не разобралась: %s", e)
-
-    # 2) sitemap
-    try:
-        for path in site.urls_from_sitemaps():
-            if path not in candidates:
-                candidates.append(path)
-        log.info("hire.am: кандидатов после sitemap: %d", len(candidates))
-    except Exception as e:  # noqa: BLE001
-        log.debug("hire.am: sitemap пропущен: %s", e)
-
-    if not candidates:
-        try:
-            r = site.get(site.base + "/")
-            snippet = re.sub(r"\s+", " ", (r.text or "")[:300])
-            log.info("hire.am: 0 кандидатов; начало главной: %s", snippet)
-        except Exception:
-            pass
-        return out
-
-    # 3) обходим карточки (лимит + тайм-бюджет + вежливая пауза)
-    fetch = 0
-    for path in candidates:
+    # 1) категории + пагинация
+    for cat_slug, cat_name in CATEGORIES.items():
         if len(out) >= HIRE_MAX_ITEMS or time.time() - started > HIRE_TIME_BUDGET:
-            log.info("hire.am: лимит достигнут (%d вакансий / %.0f c)",
-                     len(out), time.time() - started)
             break
-        url = site.base + path
-        try:
-            time.sleep(max(SLEEP_BETWEEN_REQUESTS, 0.5))
-            r = site.get(url)
-            if not r.ok or not _looks_html(r.text):
-                continue
-            fetch += 1
-            for d, _ in _parse_jsonld_jobs(r.text, url):
-                v = _vac_from_jsonld(d, url)
-                if v:
-                    add(v)
+        page = 1
+        got_in_cat = 0
+        while page <= PAGES_PER_CAT:
+            if len(out) >= HIRE_MAX_ITEMS or time.time() - started > HIRE_TIME_BUDGET:
+                break
+            url = f"{site.base}/jobs/{cat_slug}/" if page == 1 \
+                else f"{site.base}/jobs/{cat_slug}/?p={page}"
+            try:
+                time.sleep(max(SLEEP_BETWEEN_REQUESTS, 0.5))
+                r = site.get(url)
+                statuses[r.status_code] = statuses.get(r.status_code, 0) + 1
+                if not r.ok or not _looks_html(r.text):
                     break
-            # json-ld нет — og-фолбэк, если карточка ещё не добавлена
-            if not any(o.url == url for o in out):
-                v = _vac_from_html(r.text, url)
-                if v:
+                rows = _parse_category_page(r.text, cat_name)
+                fresh = 0
+                for v in rows:
+                    if v.ext_id not in seen_ids:
+                        fresh += 1
                     add(v)
-        except Exception as e:  # noqa: BLE001
-            log.debug("hire.am: карточка %s не разобралась: %s", path, e)
+                got_in_cat += len(rows)
+                if not rows or fresh == 0:
+                    break  # страницы кончились (или пошли повторы)
+                page += 1
+            except Exception as e:  # noqa: BLE001
+                log.debug("hire.am: %s p=%d не получена: %s", cat_slug, page, e)
+                break
+        if got_in_cat:
+            log.info("hire.am: категория %s -> %d строк (итого %d)",
+                     cat_slug, got_in_cat, len(out))
 
-    log.info("hire.am: собрано %d вакансий (просмотрено карточек: %d, кандидатов: %d)",
-             len(out), fetch, len(candidates))
+    # 2) фолбэк: RSS
+    if not out:
+        out = _rss_fallback(site)
+
+    if statuses:
+        st = ", ".join(f"{k}×{v}" for k, v in sorted(statuses.items()))
+        log.info("hire.am: HTTP-статусы страниц категорий: %s", st)
+    log.info("hire.am: собрано %d вакансий за %.0f c", len(out), time.time() - started)
     return out

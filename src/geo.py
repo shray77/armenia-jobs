@@ -146,7 +146,7 @@ FOREIGN_HINTS = tuple(h for h in FOREIGN_HINTS if h != "груз")
 
 REMOTE_HINTS: tuple[str, ...] = (
     "удалённ", "удаленн", "дистанционн", "remote", "из дома", "home office",
-    "հեռակա", "հեռավար", "work from home", "wfh",
+    "հեռակա", "հեռավար", "work from home", "wfh", "anywhere",
 )
 
 _WORD_RE = re.compile(r"[^\w\s]", re.UNICODE)
@@ -187,6 +187,46 @@ def classify(city: str) -> str:
     if _has(n, ARMENIA_HINTS):
         return "armenia"
     return "unknown"
+
+
+def tag_vacancies(vacancies: list) -> Counter:
+    """In-place проставляет v.geo по локации (удалёнка -> is_remote=True).
+
+    Зарубежные вакансии НЕ выбрасываются: они помечаются geo='foreign' и
+    скрываются фильтром «Без заграницы» на дашборде, не уходят в Telegram,
+    а в Excel помечаются в колонке «Гео».
+    """
+    counts: Counter = Counter()
+    for v in vacancies:
+        cat = classify(v.city)
+        v.geo = cat
+        if cat == "remote":
+            v.is_remote = True
+        counts[cat] += 1
+    log.info("гео-разметка: Армения %d · удалёнка %d · зарубежных %d · "
+             "без локации %d · не опознано %d",
+             counts["armenia"], counts["remote"], counts["foreign"],
+             counts["empty"], counts["unknown"])
+    unknown = Counter((v.city or "").strip()[:40] for v in vacancies
+                      if v.geo == "unknown")
+    if unknown:
+        top = ", ".join(f"{c}×{n}" for c, n in unknown.most_common(15))
+        log.info("гео-разметка: нераспознанные локации (считаем местными): %s", top)
+    foreign = Counter((v.city or "").strip()[:40] for v in vacancies
+                      if v.geo == "foreign")
+    if foreign:
+        top = ", ".join(f"{c}×{n}" for c, n in foreign.most_common(10))
+        log.info("гео-разметка: зарубежные локации (скрыты фильтром): %s", top)
+    return counts
+
+
+GEO_RU = {
+    "armenia": "Армения",
+    "remote": "удалённо",
+    "foreign": "заграница",
+    "unknown": "не опознано",
+    "empty": "",
+}
 
 
 def filter_foreign(vacancies: list) -> tuple[list, dict]:

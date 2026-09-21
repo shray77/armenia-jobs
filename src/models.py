@@ -17,6 +17,7 @@ class Vacancy:
     city: str = ""              # локация
     company: str = ""
     category: str = ""
+    geo: str = ""               # armenia | remote | foreign | unknown | empty
     is_remote: bool = False
     url: str = ""
     posted_at: Optional[str] = None  # ISO-строка если известна

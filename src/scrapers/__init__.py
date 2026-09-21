@@ -6,7 +6,7 @@ import logging
 import requests
 
 from ..config import WARP_PROXY, WARP_SOURCES
-from ..geo import filter_foreign
+from ..geo import tag_vacancies
 from ..session import make_session
 from . import hire_am, list_am, staff_am, worknet_am
 
@@ -54,11 +54,12 @@ def collect_all(session: requests.Session) -> tuple[list, dict]:
             seen.add(v.uid)
             uniq.append(v)
 
-    # гео-фильтр: брату нужна работа в Армении — зарубежное выбрасываем
-    uniq, geo_stats = filter_foreign(uniq)
-    stats["гео-фильтр"] = (
-        f"отсеяно {geo_stats['dropped']} зарубежных · "
-        f"{geo_stats['remote']} удалёнка · {geo_stats['empty_city']} без локации"
+    # гео-разметка: зарубежные НЕ выбрасываем — они помечаются и скрываются
+    # фильтром «Без заграницы» на дашборде, не уходят в TG, помечаются в Excel
+    geo = tag_vacancies(uniq)
+    stats["гео"] = (
+        f"заграница: {geo['foreign']} (скрыты фильтром) · удалёнка: {geo['remote']} · "
+        f"без локации: {geo['empty']} · не опознано: {geo['unknown']}"
     )
     stats["warp"] = (f"включён для: {', '.join(sorted(WARP_SOURCES))}"
                      if WARP_PROXY else "выключен (WARP_PROXY не задан)")
