@@ -144,6 +144,21 @@ FOREIGN_HINTS: tuple[str, ...] = (
 # аккуратно: «груз» может совпасть с «грузчик» — убираем его, оставляем точные
 FOREIGN_HINTS = tuple(h for h in FOREIGN_HINTS if h != "груз")
 
+# Подстраховка для вакансий БЕЗ города: заграница часто прячется в заголовке
+# («Хлебная мастерская в РФ, Москва»), а город у hire.am чаще всего пустой.
+# Здесь только однозначные топонимы/маркеры: никакой языковой лексики
+# («Russian speaking», «German Language Instructor» — это работа в Ереване),
+# и без «сша/америк» (рынок США у армянской компании — легитимная вакансия).
+FOREIGN_TITLE_HINTS: tuple[str, ...] = (
+    "рф", "москва", "московск", "мocкв", "moscow",
+    "санкт-петербург", "санкт петербург", "saint petersburg",
+    "тбилиси", "tbilisi", "батуми", "batumi", "баку", "baku",
+    "дубай", "dubai", "оаэ", "стамбул", "istanbul",
+    "нью-йорк", "new york", "лос-анджелес", "los angeles",
+    "лондон", "london", "берлин", "berlin", "варшав", "warsaw",
+    "за рубеж", "рубежом", "за границ", "abroad",
+)
+
 REMOTE_HINTS: tuple[str, ...] = (
     "удалённ", "удаленн", "дистанционн", "remote", "из дома", "home office",
     "հեռակա", "հեռավար", "work from home", "wfh", "anywhere",
@@ -195,14 +210,30 @@ def tag_vacancies(vacancies: list) -> Counter:
     Зарубежные вакансии НЕ выбрасываются: они помечаются geo='foreign' и
     скрываются фильтром «Без заграницы» на дашборде, не уходят в Telegram,
     а в Excel помечаются в колонке «Гео».
+
+    Если город пустой/неопознанный — дополнительно сканируем заголовок и
+    компанию по FOREIGN_TITLE_HINTS: у hire.am город почти всегда пустой,
+    и без этого «…в РФ, Москва» просачивалась бы на дашборд.
     """
     counts: Counter = Counter()
+    by_title: Counter = Counter()
     for v in vacancies:
         cat = classify(v.city)
+        if cat in ("empty", "unknown"):
+            extra = " ".join(
+                part for part in (getattr(v, "title_orig", ""),
+                                  getattr(v, "title_ru", ""),
+                                  getattr(v, "company", "")) if part)
+            if extra and _has(_norm(extra), FOREIGN_TITLE_HINTS):
+                cat = "foreign"
+                by_title[(v.city or "").strip()[:40] or "(без города)"] += 1
         v.geo = cat
         if cat == "remote":
             v.is_remote = True
         counts[cat] += 1
+    if by_title:
+        top = ", ".join(f"{c}×{n}" for c, n in by_title.most_common(10))
+        log.info("гео-разметка: зарубежные по заголовку/компании (город пустой): %s", top)
     log.info("гео-разметка: Армения %d · удалёнка %d · зарубежных %d · "
              "без локации %d · не опознано %d",
              counts["armenia"], counts["remote"], counts["foreign"],

@@ -106,6 +106,7 @@ a:hover {{ text-decoration:underline; }}
     <select id="f-city"><option value="">Все локации</option></select>
     <label style="display:flex;align-items:center;gap:6px;font-size:14px">
       <input type="checkbox" id="f-geo" checked style="width:auto"> без заграницы
+      <span id="f-geo-n" style="font-size:12px;color:#69738a;font-weight:600"></span>
     </label>
     <label style="display:flex;align-items:center;gap:6px;font-size:14px">
       <input type="checkbox" id="f-remote" style="width:auto"> только удалённые
@@ -141,6 +142,7 @@ const DATA = {payload};
 const $ = id => document.getElementById(id);
 const cTotal = $('c-total'), cYerevan = $('c-yerevan'), cRemote = $('c-remote'), cCompanies = $('c-companies');
 const qEl = $('q'), fSource = $('f-source'), fCity = $('f-city'), fRemote = $('f-remote'), fGeo = $('f-geo'), reset = $('reset');
+const fGeoN = $('f-geo-n');
 const rowsEl = $('rows'), emptyEl = $('empty');
 const SRC = {{staff:'staff.am', worknet:'worknet.am', list:'list.am', hire:'hire.am'}};
 const fmtDate = s => {{
@@ -153,6 +155,7 @@ const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c => ({{'&':'&amp;','<
 
 // счётчики (всего и «без заграницы» — как на сайте по умолчанию)
 const visibleNoForeign = DATA.filter(v => v.geo !== 'foreign').length;
+const nForeign = DATA.length - visibleNoForeign;
 const yerevan = DATA.filter(v => (v.city||'').toLowerCase().includes('ереван')).length;
 const remote = DATA.filter(v => v.is_remote).length;
 const companies = new Set(DATA.filter(v => v.geo !== 'foreign').map(v => (v.company||'').toLowerCase()).filter(Boolean)).size;
@@ -195,6 +198,7 @@ function rows() {{
 }}
 function render() {{
   const r = rows();
+  fGeoN.textContent = nForeign ? (fGeo.checked ? `скрыто: ${{nForeign}}` : `${{nForeign}} показано`) : '';
   emptyEl.hidden = r.length > 0;
   rowsEl.innerHTML = r.slice(0, 2000).map(v => {{
     const title = v.title_ru || v.title_orig || '(без названия)';
