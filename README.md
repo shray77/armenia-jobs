@@ -91,7 +91,7 @@ TELEGRAM_BOT_TOKEN="123:ABC" TELEGRAM_CHAT_ID="123456" python main.py
 |---|---|---|
 | `STAFF_MAX_PAGES` | 30 | сколько страниц staff.am обходит (50 вакансий/стр) |
 | `LIST_MAX_PAGES` | 3 | страниц list.am за прогон |
-| `HIRE_MAX_ITEMS` | 200 | максимум карточек hire.am за прогон |
+| `HIRE_MAX_ITEMS` | 500 | максимум карточек hire.am за прогон |
 | `WARP_SOURCES` | list,worknet,hire | какие источники пускать через WARP-прокси |
 | `TG_PER_MESSAGE` | 10 | вакансий в одном Telegram-сообщении |
 | `TG_MAX_MESSAGES` | 30 | максимум сообщений за прогон |

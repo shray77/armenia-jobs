@@ -27,7 +27,7 @@ STAFF_MAX_PAGES = int(os.getenv("STAFF_MAX_PAGES", "30"))
 LIST_MAX_PAGES = int(os.getenv("LIST_MAX_PAGES", "3"))
 WORKNET_PER_PAGE = int(os.getenv("WORKNET_PER_PAGE", "100"))
 # hire.am: сколько карточек максимум и сколько секунд максимум за прогон
-HIRE_MAX_ITEMS = int(os.getenv("HIRE_MAX_ITEMS", "200"))
+HIRE_MAX_ITEMS = int(os.getenv("HIRE_MAX_ITEMS", "500"))
 HIRE_TIME_BUDGET = int(os.getenv("HIRE_TIME_BUDGET", "240"))
 
 # --- Cloudflare WARP (опционально) -----------------------------------------
