@@ -28,7 +28,7 @@ from ..models import Vacancy
 log = logging.getLogger(__name__)
 
 HOST = "hire.am"
-BASES = ("http://hire.am", "http://www.hire.am", "https://hire.am", "https://www.hire.am")
+BASES = ("http://www.hire.am", "http://hire.am", "https://www.hire.am", "https://hire.am")
 DOH_ENDPOINTS = (
     "https://dns.google/resolve",
     "https://cloudflare-dns.com/dns-query",
@@ -109,15 +109,22 @@ class _Site:
         return self.s.get(url, timeout=timeout, allow_redirects=True)
 
     def connect(self) -> bool:
-        for base in BASES:
-            try:
-                r = self.s.get(base + "/", timeout=20, allow_redirects=True)
-                if r.ok and _looks_html(r.text):
-                    self.base = base.rstrip("/")
-                    log.info("hire.am: отвечает на %s", self.base)
-                    return True
-            except Exception as e:  # noqa: BLE001
-                log.info("hire.am: %s недоступен (%s)", base, e.__class__.__name__)
+        # два круга по базам: у hire.am бывают секундные флаки (прошлый прогон
+        # через тот же WARP отдавал 501 вакансий, следующий — ConnectionError)
+        for attempt in (1, 2):
+            for base in BASES:
+                try:
+                    r = self.s.get(base + "/", timeout=20, allow_redirects=True)
+                    if r.ok and _looks_html(r.text):
+                        self.base = base.rstrip("/")
+                        log.info("hire.am: отвечает на %s", self.base)
+                        return True
+                    log.info("hire.am: %s ответил HTTP %s без HTML", base, r.status_code)
+                except Exception as e:  # noqa: BLE001
+                    log.info("hire.am: %s недоступен (%s)", base, e.__class__.__name__)
+            if attempt == 1:
+                log.info("hire.am: первая попытка не удалась — ждём 7с и пробуем ещё раз")
+                time.sleep(7)
         self.ip = _doh_resolve(self.s)
         if not self.ip:
             log.warning("hire.am: DNS не резолвится ни напрямую, ни через DoH — пропуск")
@@ -127,6 +134,7 @@ class _Site:
             try:
                 r = self.s.get(f"{scheme}://{self.ip}/", timeout=20,
                                headers={"Host": HOST}, allow_redirects=False)
+                log.info("hire.am: IP-режим %s://%s -> HTTP %s", scheme, self.ip, r.status_code)
                 if r.ok and _looks_html(r.text):
                     self.ip_mode = True
                     self.base = f"{scheme}://{self.ip}"
