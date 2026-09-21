@@ -10,6 +10,10 @@ on:
         description: "Отправлять Telegram-уведомления"
         type: boolean
         default: true
+      warp:
+        description: "Пробовать WARP-прокси для скраперов (list/worknet/hire)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -37,6 +41,55 @@ jobs:
 
       - name: Установка зависимостей
         run: pip install -r requirements.txt
+
+      - name: Cloudflare WARP (socks5-прокси для скраперов)
+        # best-effort: не поднялся — скраперы работают напрямую
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.warp }}
+        continue-on-error: true
+        timeout-minutes: 4
+        run: |
+          set -e
+          cd "$(mktemp -d)"
+          WGCF_VER=2.2.21
+          curl -fsSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VER}/wgcf_${WGCF_VER}_linux_amd64"
+          chmod +x wgcf
+          ./wgcf register --accept-tos >/dev/null
+          ./wgcf generate >/dev/null
+          WP_VER=1.0.9
+          curl -fsSL -o wireproxy.tar.gz "https://github.com/pufferffish/wireproxy/releases/download/v${WP_VER}/wireproxy_linux_amd64.tar.gz"
+          tar xzf wireproxy.tar.gz
+          chmod +x wireproxy
+          PK=$(awk '/^PrivateKey/{print $3}' wgcf-profile.conf)
+          ADDR=$(awk '/^Address/{print $3; exit}' wgcf-profile.conf)
+          cat > wireproxy.conf <<EOF
+          [Interface]
+          PrivateKey = ${PK}
+          Address = ${ADDR}
+          DNS = 1.1.1.1
+
+          [Peer]
+          PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
+          AllowedIPs = 0.0.0.0/0
+          Endpoint = engage.cloudflareclient.com:2408
+
+          [Socks5]
+          BindAddress = 127.0.0.1:40000
+          EOF
+          nohup ./wireproxy -c wireproxy.conf >/dev/null 2>&1 &
+          OK=""
+          for i in $(seq 1 12); do
+            sleep 2
+            if curl -fsS --max-time 6 --socks5-hostname 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "warp=on"; then
+              OK=1
+              break
+            fi
+          done
+          if [ -n "$OK" ]; then
+            echo "WARP_PROXY=socks5h://127.0.0.1:40000" >> "$GITHUB_ENV"
+            echo "✅ WARP подключён — list/worknet/hire пойдут через Cloudflare"
+          else
+            echo "⚠️ WARP не поднялся — скраперы работают напрямую (не критично)"
+          fi
 
       - name: Сбор вакансий
         env:
