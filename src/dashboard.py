@@ -159,7 +159,7 @@ const nForeign = DATA.length - visibleNoForeign;
 const yerevan = DATA.filter(v => (v.city||'').toLowerCase().includes('ереван')).length;
 const remote = DATA.filter(v => v.is_remote).length;
 const companies = new Set(DATA.filter(v => v.geo !== 'foreign').map(v => (v.company||'').toLowerCase()).filter(Boolean)).size;
-cTotal.textContent = `${{visibleNoForeign}}<span style="font-size:13px;color:#c6d4e6"> / ${{DATA.length}}</span>`;
+cTotal.innerHTML = `${{visibleNoForeign}}<span style="font-size:13px;color:#c6d4e6"> / ${{DATA.length}}</span>`;
 cYerevan.textContent = yerevan;
 cRemote.textContent = remote; cCompanies.textContent = companies;
 
