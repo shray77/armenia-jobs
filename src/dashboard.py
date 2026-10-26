@@ -80,9 +80,26 @@ a:hover {{ text-decoration:underline; }}
 .t-muted {{ color:var(--muted); font-size:12px; }}
 .footer {{ padding:16px; text-align:center; color:var(--muted); font-size:12px; line-height:1.6; }}
 .empty {{ padding:36px; text-align:center; color:var(--muted); }}
+.more-row {{ display:flex; gap:12px; align-items:center; justify-content:center; padding:12px; flex-wrap:wrap; }}
 @media (max-width:760px) {{
   .hide-sm {{ display:none; }}
-  h1 {{ font-size:21px; }}
+  h1 {{ font-size:18px; }}
+  /* мобильная компакция (Task 167): хедер 421→~125px —
+     домены/описание скрыты (дублируются футером), счётчики одним рядом */
+  header {{ padding:13px 14px 11px; }}
+  .sub {{ font-size:11px; }}
+  .sub-dom, .sub-desc {{ display:none; }}
+  .counters {{ gap:6px; margin-top:9px; flex-wrap:nowrap; }}
+  .counter {{ flex:1 1 0; min-width:0; padding:5px 6px 4px; border-radius:9px; text-align:center; }}
+  .counter b {{ font-size:15px; }}
+  .counter span {{ font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+  .toolbar {{ gap:8px; margin:12px 0 10px; }}
+  .toolbar input {{ flex:1 1 100%; }}
+  .toolbar select {{ flex:1 1 calc(50% - 8px); min-width:0; }}
+  .toolbar label {{ flex:1 1 calc(50% - 8px); }}
+  .btn {{ padding:8px 12px; font-size:13px; }}
+  table {{ font-size:13px; }}
+  tbody td {{ padding:8px 10px; }}
 }}
 </style>
 </head>
@@ -90,7 +107,7 @@ a:hover {{ text-decoration:underline; }}
 <header>
   <div class="wrap">
     <h1>🇦🇲 Вакансии в Армении — агрегатор</h1>
-    <div class="sub">staff.am · worknet.am · list.am · hire.am — сбор, перевод на русский, обновление по расписанию. Обновлено: {now}</div>
+    <div class="sub"><span class="sub-dom">staff.am · worknet.am · list.am · hire.am</span><span class="sub-desc"> — сбор, перевод на русский, обновление по расписанию.</span> Обновлено: {now}</div>
     <div class="counters">
       <div class="counter"><b id="c-total">…</b><span>вакансий (без заграницы / всего)</span></div>
       <div class="counter"><b id="c-yerevan">…</b><span>Ереван</span></div>
@@ -130,6 +147,10 @@ a:hover {{ text-decoration:underline; }}
     </div>
     <div class="empty" id="empty" hidden>Ничего не найдено — измените фильтры.</div>
   </div>
+  <div class="more-row" id="moreRow">
+    <span class="t-muted" id="shownInfo"></span>
+    <button class="btn btn-ghost" id="more" hidden>Показать ещё</button>
+  </div>
   <div class="footer">
     Источники: <a href="https://staff.am">staff.am</a> · <a href="https://worknet.am">worknet.am</a> ·
     <a href="https://www.list.am">list.am</a> · <a href="https://hire.am">hire.am</a><br>
@@ -144,6 +165,7 @@ const cTotal = $('c-total'), cYerevan = $('c-yerevan'), cRemote = $('c-remote'),
 const qEl = $('q'), fSource = $('f-source'), fCity = $('f-city'), fRemote = $('f-remote'), fGeo = $('f-geo'), reset = $('reset');
 const fGeoN = $('f-geo-n');
 const rowsEl = $('rows'), emptyEl = $('empty');
+const moreBtn = $('more'), shownInfoEl = $('shownInfo'), moreRowEl = $('moreRow');
 const SRC = {{staff:'staff.am', worknet:'worknet.am', list:'list.am', hire:'hire.am'}};
 const fmtDate = s => {{
   if (!s) return '—';
@@ -174,6 +196,9 @@ for (const c of cities) {{
 }}
 
 let sortKey = 'posted_at', sortDir = -1;
+// инкрементальный рендер (Task 167): было ~1800 строк DOM одним куском
+// (body 152k px, лаги на телефоне) — стало по 50, кнопкой «Показать ещё»
+const PAGE = 50; let shown = PAGE;
 function rows() {{
   const q = qEl.value.trim().toLowerCase();
   const src = fSource.value, city = fCity.value, rem = fRemote.checked, noForeign = fGeo.checked;
@@ -200,7 +225,8 @@ function render() {{
   const r = rows();
   fGeoN.textContent = nForeign ? (fGeo.checked ? `скрыто: ${{nForeign}}` : `${{nForeign}} показано`) : '';
   emptyEl.hidden = r.length > 0;
-  rowsEl.innerHTML = r.slice(0, 2000).map(v => {{
+  const vis = Math.min(shown, r.length);
+  rowsEl.innerHTML = r.slice(0, vis).map(v => {{
     const title = v.title_ru || v.title_orig || '(без названия)';
     const orig = v.title_ru && v.title_ru !== v.title_orig
       ? `<div class="t-muted">${{esc(v.title_orig)}}</div>` : '';
@@ -220,19 +246,25 @@ function render() {{
     th.textContent = th.textContent.replace(/ [▲▼]$/, '');
     if (th.dataset.k === sortKey) th.textContent += sortDir === -1 ? ' ▼' : ' ▲';
   }});
+  moreRowEl.hidden = r.length === 0;
+  moreBtn.hidden = vis >= r.length;
+  moreBtn.textContent = `Показать ещё · ещё ${{r.length - vis}}`;
+  shownInfoEl.textContent = `показано ${{vis}} из ${{r.length}}`;
 }}
-qEl.addEventListener('input', render);
-fSource.addEventListener('change', render);
-fCity.addEventListener('change', render);
-fRemote.addEventListener('change', render);
-fGeo.addEventListener('change', render);
+const resetView = () => {{ shown = PAGE; render(); }};
+qEl.addEventListener('input', resetView);
+fSource.addEventListener('change', resetView);
+fCity.addEventListener('change', resetView);
+fRemote.addEventListener('change', resetView);
+fGeo.addEventListener('change', resetView);
 reset.addEventListener('click', () => {{
-  qEl.value = ''; fSource.value = ''; fCity.value = ''; fRemote.checked = false; fGeo.checked = true; render();
+  qEl.value = ''; fSource.value = ''; fCity.value = ''; fRemote.checked = false; fGeo.checked = true; resetView();
 }});
+moreBtn.addEventListener('click', () => {{ shown += PAGE; render(); }});
 document.querySelectorAll('th[data-k]').forEach(th => th.addEventListener('click', () => {{
   const k = th.dataset.k;
   if (sortKey === k) sortDir *= -1; else {{ sortKey = k; sortDir = -1; }}
-  render();
+  resetView();
 }}));
 render();
 </script>
